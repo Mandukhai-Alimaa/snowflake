@@ -16,8 +16,6 @@
 
 # ADBC Drivers for Snowflake
 
-Not affiliated with Snowflake.
-
 This repository contains [ADBC drivers](https://arrow.apache.org/adbc/) for
 Snowflake, implemented in different languages.
 
