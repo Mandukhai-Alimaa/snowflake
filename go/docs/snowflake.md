@@ -17,10 +17,6 @@
 {{ cross_reference|safe }}
 # Snowflake Driver {{ version }}
 
-:::{note}
-This project is not associated with Snowflake Inc.
-:::
-
 {{ version_header|safe }}
 
 This driver provides access to [Snowflake][snowflake], a cloud-based data warehouse platform.
