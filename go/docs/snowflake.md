@@ -44,7 +44,7 @@ This follows the [Go Snowflake Driver Connection String](https://pkg.go.dev/gith
 Components:
 
 - `scheme`: `snowflake://` (required)
-- `user/password`: For username/password authentication
+- `user/password`: (optional) For username/password authentication
 - `host`: The Snowflake account identifier string (e.g., myorg-account1) OR the full hostname (e.g., private.network.com). If a full hostname is used, the actual Snowflake account identifier must be provided separately via the account query parameter (see example 3).
 - `port`: The port is optional and defaults to 443.
 - `database`: Database name (required)
