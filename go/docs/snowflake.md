@@ -17,15 +17,54 @@
 {{ cross_reference|safe }}
 # Snowflake Driver {{ version }}
 
-{{ version_header|safe }}
+{{ heading|safe }}
 
 This driver provides access to [Snowflake][snowflake], a cloud-based data warehouse platform.
 
 ## Installation & Quickstart
 
-The driver can be installed with `dbc`.
+The driver can be installed with [dbc](https://docs.columnar.tech/dbc):
 
-To use the driver, provide a Snowflake connection string as the `uri` option. The driver supports URI format and DSN-style connection strings.
+```bash
+dbc install snowflake
+```
+
+## Pre-requisites
+
+Using the Snowflake driver requires a Snowflake account and authentication. See [Getting Started With Snowflake](https://docs.snowflake.com/en/user-guide-getting-started) for instructions.
+
+## Connecting
+
+To connect, replace the snowflake options below with the appropriate values for your situation and run the following:
+
+```python
+from adbc_driver_manager import dbapi
+
+conn = dbapi.connect(
+    driver="snowflake",
+    db_kwargs={
+        "username": "USER",
+
+        ### for username/password authentication: ###
+        "adbc.snowflake.sql.auth_type": "auth_snowflake",
+        "password": "PASS",
+
+        ### for JWT authentication: ###
+        #"adbc.snowflake.sql.auth_type": "auth_jwt",
+        #"adbc.snowflake.sql.client_option.jwt_private_key": "/path/to/rsa_key.p8",
+
+        "adbc.snowflake.sql.account": "ACCOUNT-IDENT",
+        "adbc.snowflake.sql.db": "SNOWFLAKE_SAMPLE_DATA",
+        "adbc.snowflake.sql.schema": "TPCH_SF1",
+        "adbc.snowflake.sql.warehouse": "MY_WAREHOUSE",
+        "adbc.snowflake.sql.role": "MY_ROLE"
+    }
+)
+```
+
+Note: The example above is for Python using the [adbc-driver-manager](https://pypi.org/project/adbc-driver-manager) package but the process will be similar for other driver managers.
+
+The driver supports connecting with individual options or connection strings.
 
 ## Connection String Format
 
