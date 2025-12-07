@@ -21,52 +21,35 @@ The following must be set up.
 - Snowflake Account and credentials
 - A database, stored in `SNOWFLAKE_DATABASE`
 - A schema (dataset), stored in `SNOWFLAKE_SCHEMA`
-- A secondary schema for cross-schema tests, stored in `SNOWFLAKE_SECONDARY_SCHEMA`
-- A warehouse, stored in `SNOWFLAKE_WAREHOUSE`
 
 ## Authentication
 
-You must provide Snowflake credentials via one of the following methods:
+You must provide Snowflake credentials by setting the following environment variables:
 
-### Option 1: Environment Variables
-Set the following environment variables:
 ```bash
 export SNOWFLAKE_URI="snowflake://user:password@account.snowflakecomputing.com/database/schema?warehouse=warehouse"
 export SNOWFLAKE_DATABASE="your_database"
 export SNOWFLAKE_SCHEMA="your_schema"
-export SNOWFLAKE_SECONDARY_SCHEMA="your_secondary_schema"
-export SNOWFLAKE_WAREHOUSE="your_warehouse"
-```
-
-### Option 2: Snowflake URI Format
-The `SNOWFLAKE_URI` should follow the format:
-```
-snowflake://user:password@account/database/schema?warehouse=warehouse&other_params=value
 ```
 
 Example:
+```bash
+export SNOWFLAKE_URI="snowflake://testuser:mypassword@myorg-account1/testdb/public?warehouse=compute_wh&role=myrole"
+export SNOWFLAKE_DATABASE="testdb"
+export SNOWFLAKE_SCHEMA="public"
 ```
-snowflake://testuser:mypassword@myorg-account1/testdb/public?warehouse=compute_wh&role=myrole
-```
+
+## Skipped Tests
+
+Several tests are automatically skipped due to Snowflake driver limitations:
+- Timestamp parameter binding tests (timestamp, timestamp_us, timestamp_ms, timestamp_ns, timestamp_s, timestamptz, timestamptz_us)
+- Various data type parameter binding tests (decimal, fixed_size_binary, large_binary, string_view, time)
 
 ## Running Tests
 
 Once configured, run the validation suite with:
 
 ```bash
-pytest
+cd go
+pixi run validate
 ```
-
-Or run specific test modules:
-```bash
-pytest tests/test_connection.py
-pytest tests/test_query.py
-pytest tests/test_ingest.py
-```
-
-## Test Environment Requirements
-
-- Snowflake account with appropriate permissions
-- Database and schema with CREATE, INSERT, SELECT, DROP permissions
-- Warehouse with USAGE privileges
-- Network access to Snowflake endpoints
