@@ -14,7 +14,7 @@
 
 from pathlib import Path
 
-from adbc_drivers_validation import model, quirks
+from adbc_drivers_validation import model
 
 
 class SnowflakeQuirks(model.DriverQuirks):
@@ -45,7 +45,7 @@ class SnowflakeQuirks(model.DriverQuirks):
         database={
             "uri": model.FromEnv("SNOWFLAKE_URI"),
             "adbc.snowflake.sql.client_option.max_timestamp_precision": "microseconds",
-            "adbc.snowflake.sql.client_option.use_high_precision": "false"
+            "adbc.snowflake.sql.client_option.use_high_precision": "false",
         },
         connection={},
         statement={},
@@ -61,10 +61,13 @@ class SnowflakeQuirks(model.DriverQuirks):
         # Snowflake returns "Object does not exist, or operation cannot be performed."
         # Error codes 002043 or 002003 for table/object not found errors
         # Snowflake doesn't include the table name in the error message
-        return ("002043" in error_msg or "002003" in error_msg or
-                "object does not exist" in error_msg or
-                "does not exist or not authorized" in error_msg)
-    
+        return (
+            "002043" in error_msg
+            or "002003" in error_msg
+            or "object does not exist" in error_msg
+            or "does not exist or not authorized" in error_msg
+        )
+
     def quote_one_identifier(self, identifier: str) -> str:
         """Quote an identifier to preserve case and ensure consistency."""
         identifier = identifier.replace('"', '""')
@@ -83,7 +86,6 @@ class SnowflakeQuirks(model.DriverQuirks):
         if current:
             statements.append("\n".join(current))
 
-        
         return statements
 
 

@@ -45,7 +45,9 @@ class TestStatement(statement_tests.TestStatement):
                 if not driver.is_table_not_found(table_name=table_name, error=e):
                     raise
 
-            cursor.adbc_statement.set_sql_query(f"CREATE TABLE {driver.quote_identifier(table_name)} (id INT)")
+            cursor.adbc_statement.set_sql_query(
+                f"CREATE TABLE {driver.quote_identifier(table_name)} (id INT)"
+            )
             rows_affected = cursor.adbc_statement.execute_update()
             # Snowflake returns -1 for DDL operations like CREATE TABLE
             assert rows_affected == -1
@@ -57,18 +59,22 @@ class TestStatement(statement_tests.TestStatement):
             # Snowflake returns actual row counts for DML operations
             assert rows_affected == 1
 
-            cursor.adbc_statement.set_sql_query(f"UPDATE {driver.quote_identifier(table_name)} SET id = id + 1")
+            cursor.adbc_statement.set_sql_query(
+                f"UPDATE {driver.quote_identifier(table_name)} SET id = id + 1"
+            )
             rows_affected = cursor.adbc_statement.execute_update()
             assert rows_affected == 1
 
-            cursor.adbc_statement.set_sql_query(f"DELETE FROM {driver.quote_identifier(table_name)}")
+            cursor.adbc_statement.set_sql_query(
+                f"DELETE FROM {driver.quote_identifier(table_name)}"
+            )
             rows_affected = cursor.adbc_statement.execute_update()
             assert rows_affected == 1
 
             cursor.adbc_statement.set_sql_query(
                 driver.drop_table(table_name="test_rows_affected")
             )
-            
+
             rows_affected = cursor.adbc_statement.execute_update()
             # DROP TABLE return -1 (DDL)
             assert rows_affected == -1
