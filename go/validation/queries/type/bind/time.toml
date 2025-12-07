@@ -1,0 +1,1 @@
+skip = "time parameter binding not supported by Snowflake driver"

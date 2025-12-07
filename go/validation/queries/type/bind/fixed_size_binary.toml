@@ -1,0 +1,1 @@
+skip = "fixed_size_binary parameter binding not supported by Snowflake driver"

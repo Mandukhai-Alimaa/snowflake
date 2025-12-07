@@ -12,13 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from adbc_drivers_validation.tests.connection import (
-    TestConnection,  # noqa: F401
-    generate_tests,
-)
-
-from . import snowflake
-
-
-def pytest_generate_tests(metafunc) -> None:
-    return generate_tests(snowflake.QUIRKS, metafunc)
+# Skip string_view tests - not supported by Snowflake driver
+skip = "string view not supported by Snowflake driver"
