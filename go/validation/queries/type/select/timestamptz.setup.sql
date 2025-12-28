@@ -1,6 +1,6 @@
 CREATE TABLE test_timestamptz (
     idx INTEGER,
-    res TIMESTAMP_TZ
+    res TIMESTAMP_TZ(6)
 );
 
 INSERT INTO test_timestamptz (idx, res) VALUES (1, '2023-05-15 13:45:30+00:00'::TIMESTAMP_TZ);

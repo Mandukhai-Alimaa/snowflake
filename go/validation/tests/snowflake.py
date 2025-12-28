@@ -44,7 +44,6 @@ class SnowflakeQuirks(model.DriverQuirks):
     setup = model.DriverSetup(
         database={
             "uri": model.FromEnv("SNOWFLAKE_URI"),
-            "adbc.snowflake.sql.client_option.max_timestamp_precision": "microseconds",
             "adbc.snowflake.sql.client_option.use_high_precision": "false",
         },
         connection={},
