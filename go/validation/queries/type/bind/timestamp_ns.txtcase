@@ -14,12 +14,3 @@
 
 // part: metadata
 skip = "timestamp_ns parameter binding not supported by Snowflake driver"
-
-[tags]
-sql-type-name = "DATETIME"
-
-// part: setup_query
-CREATE TABLE test_timestamp (
-    idx INT,
-    res DATETIME(9)
-);

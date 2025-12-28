@@ -14,10 +14,3 @@
 
 skip = "timestamp parameter binding not supported by Snowflake driver"
 
-sort-keys = [["res", "ascending"]]
-
-[setup]
-drop = "test_timestamp"
-
-[tags]
-sql-type-name = "TIMESTAMP"

@@ -14,12 +14,3 @@
 
 // part: metadata
 skip = "timestamptz_us parameter binding not supported by Snowflake driver"
-
-[tags]
-sql-type-name = "TIMESTAMP_TZ"
-
-// part: setup_query
-CREATE TABLE test_timestamptz (
-    idx INT,
-    res TIMESTAMP_TZ(6)
-);
