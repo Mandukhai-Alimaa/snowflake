@@ -28,6 +28,7 @@ gendocs = "python -m validation.tests.generate_documentation"
 
 [dependencies]
 python = ">=3.13.5,<3.14"
+pytest-lazy-fixtures = ">=1.3.2,<2"
 
 [pypi-dependencies]
 adbc-drivers-dev = { git = "https://github.com/adbc-drivers/dev" }
