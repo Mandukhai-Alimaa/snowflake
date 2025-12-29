@@ -45,6 +45,7 @@ class SnowflakeQuirks(model.DriverQuirks):
         database={
             "uri": model.FromEnv("SNOWFLAKE_URI"),
             "adbc.snowflake.sql.client_option.use_high_precision": "false",
+            "timezone": "UTC",
         },
         connection={},
         statement={},
