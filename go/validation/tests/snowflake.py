@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from pathlib import Path
 
 from adbc_drivers_validation import model
@@ -22,8 +23,8 @@ class SnowflakeQuirks(model.DriverQuirks):
     driver = "adbc_driver_snowflake"
     driver_name = "ADBC Driver Foundry Driver for Snowflake"
     vendor_name = "Snowflake"
-    vendor_version = "9.39.2"
-    short_version = "snowflake"
+    vendor_version = re.compile(r"9\.[0-9]+\.[0-9]+")
+    short_version = "9"
     features = model.DriverFeatures(
         connection_get_table_schema=True,
         connection_transactions=True,
