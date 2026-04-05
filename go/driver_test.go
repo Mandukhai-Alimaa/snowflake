@@ -222,7 +222,7 @@ func (s *SnowflakeQuirks) SupportsCurrentCatalogSchema() bool          { return 
 func (s *SnowflakeQuirks) SupportsExecuteSchema() bool                 { return true }
 func (s *SnowflakeQuirks) SupportsGetSetOptions() bool                 { return true }
 func (s *SnowflakeQuirks) SupportsPartitionedData() bool               { return false }
-func (s *SnowflakeQuirks) SupportsStatistics() bool                    { return false }
+func (s *SnowflakeQuirks) SupportsStatistics() bool                    { return true }
 func (s *SnowflakeQuirks) SupportsTransactions() bool                  { return true }
 func (s *SnowflakeQuirks) SupportsGetParameterSchema() bool            { return false }
 func (s *SnowflakeQuirks) SupportsDynamicParameterBinding() bool       { return false }
@@ -3042,4 +3042,275 @@ func TestJwtAuthenticationUnencryptedValueUnauthorized(t *testing.T) {
 	cfg.User = "non_existent_user"
 
 	ConnectWithJwt(t, cfg, keyValue, "", false)
+}
+
+func (suite *SnowflakeTests) TestGetStatisticNames() {
+	statsCnxn, ok := suite.cnxn.(adbc.ConnectionGetStatistics)
+	suite.Require().True(ok, "Snowflake must implement ConnectionGetStatistics")
+
+	rdr, err := statsCnxn.GetStatisticNames(suite.ctx)
+	suite.Require().NoError(err)
+	defer rdr.Release()
+
+	// Verify schema matches ADBC spec
+	suite.True(adbc.GetStatisticNamesSchema.Equal(rdr.Schema()),
+		"expected: %s\ngot: %s", adbc.GetStatisticNamesSchema, rdr.Schema())
+
+	// Verify exactly 6 Snowflake-specific rows
+	suite.True(rdr.Next())
+	rec := rdr.RecordBatch()
+	suite.Equal(int64(6), rec.NumRows())
+}
+
+func (suite *SnowflakeTests) TestGetStatisticsBasic() {
+	// Create a persistent test table (if not exists) to ensure consistent results
+	// across test runs despite INFORMATION_SCHEMA caching
+	suite.Require().NoError(suite.stmt.SetSqlQuery(`
+		CREATE TABLE IF NOT EXISTS statistics_test (
+			id INTEGER,
+			category VARCHAR(50),
+			name VARCHAR(100),
+			value FLOAT
+		) CLUSTER BY (category)
+	`))
+	_, err := suite.stmt.ExecuteUpdate(suite.ctx)
+	suite.Require().NoError(err)
+
+	// Check if table is empty, if so populate it with 400 rows
+	suite.Require().NoError(suite.stmt.SetSqlQuery(`SELECT COUNT(*) FROM statistics_test`))
+	countRdr, _, err := suite.stmt.ExecuteQuery(suite.ctx)
+	suite.Require().NoError(err)
+	suite.Require().True(countRdr.Next())
+	count := countRdr.RecordBatch().Column(0).(*array.Int64).Value(0)
+	countRdr.Release()
+
+	if count == 0 {
+		suite.Require().NoError(suite.stmt.SetSqlQuery(`
+			INSERT INTO statistics_test
+			SELECT
+				seq4() as id,
+				CASE MOD(seq4(), 3) WHEN 0 THEN 'A' WHEN 1 THEN 'B' ELSE 'C' END as category,
+				'test_' || seq4() as name,
+				UNIFORM(1, 400, RANDOM()) as value
+			FROM TABLE(GENERATOR(ROWCOUNT => 400))
+		`))
+		_, err = suite.stmt.ExecuteUpdate(suite.ctx)
+		suite.Require().NoError(err)
+	}
+
+	// Get the current database and schema
+	var currentDb, currentSchema string
+	suite.Require().NoError(suite.stmt.SetSqlQuery("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()"))
+	rdr, _, err := suite.stmt.ExecuteQuery(suite.ctx)
+	suite.Require().NoError(err)
+	defer rdr.Release()
+
+	suite.Require().True(rdr.Next())
+	rec := rdr.RecordBatch()
+	currentDb = rec.Column(0).(*array.String).Value(0)
+	currentSchema = rec.Column(1).(*array.String).Value(0)
+
+	gs, ok := suite.cnxn.(adbc.ConnectionGetStatistics)
+	if !ok {
+		suite.T().Skip("GetStatistics not supported")
+	}
+
+	// Test Get statistics with specific table filter
+	tableName := "STATISTICS_TEST"
+	statsRdr, err := gs.GetStatistics(suite.ctx, &currentDb, &currentSchema, &tableName, false)
+	suite.Require().NoError(err)
+	defer statsRdr.Release()
+
+	// Verify schema matches ADBC spec
+	suite.True(adbc.GetStatisticsSchema.Equal(statsRdr.Schema()),
+		"Schema should match ADBC spec\nexpected: %s\ngot: %s",
+		adbc.GetStatisticsSchema, statsRdr.Schema())
+
+	// Read and extract statistics for our table
+	var allStats []map[string]any
+	for statsRdr.Next() {
+		rec := statsRdr.RecordBatch()
+		suite.Greater(rec.NumRows(), int64(0), "Should have at least one catalog")
+		stats := extractStatisticsForTable(rec, currentDb, currentSchema, tableName)
+		allStats = append(allStats, stats...)
+	}
+	suite.NoError(statsRdr.Err())
+
+	suite.Greater(len(allStats), 0, "Should find statistics for STATISTICS_TEST table")
+
+	// Convert to lookup maps for easier assertions
+	statisticsFound := make(map[int16]any)   // key -> value
+	statisticsApprox := make(map[int16]bool) // key -> is_approximate
+	for _, stat := range allStats {
+		key := stat["statistic_key"].(int16)
+		statisticsFound[key] = stat["statistic_value"]
+		statisticsApprox[key] = stat["statistic_is_approximate"].(bool)
+	}
+
+	// Verify we got all expected statistics
+	// Base statistics (always present in exact mode):
+	suite.Contains(statisticsFound, int16(6), "Should have row_count statistic")
+	suite.Contains(statisticsFound, int16(1024), "Should have bytes statistic")
+	suite.Contains(statisticsFound, int16(1025), "Should have retention_time statistic")
+
+	// Row count: We inserted 400 rows (4 batches × 100)
+	rowCount, hasRowCount := statisticsFound[int16(6)].(float64)
+	suite.True(hasRowCount, "row_count statistic should be present as float64")
+	suite.GreaterOrEqual(rowCount, float64(400), "Row count should be non-negative")
+	suite.True(statisticsApprox[int16(6)], "row_count should be approximate (cached)")
+	suite.T().Logf("Row count: %.0f (note: may be stale due to INFORMATION_SCHEMA caching)", rowCount)
+
+	// Bytes: Should be > 0, reasonable size for 400 rows with data
+	bytes, hasBytes := statisticsFound[int16(1024)].(int64)
+	suite.True(hasBytes, "bytes statistic should be present")
+	suite.Greater(bytes, int64(1000), "Bytes should be > 1000 for 400 rows with data")
+	suite.True(statisticsApprox[int16(1024)], "bytes should be approximate (cached)")
+	suite.T().Logf("Bytes: %d", bytes)
+
+	// Retention time: Default is usually 1 day for new tables
+	retentionTime, hasRetention := statisticsFound[int16(1025)].(int64)
+	suite.True(hasRetention, "retention_time statistic should be present")
+	suite.GreaterOrEqual(retentionTime, int64(1), "Retention time should be at least 1 day")
+	suite.True(statisticsApprox[int16(1025)], "retention_time should be approximate (cached)")
+	suite.T().Logf("Retention time: %d days", retentionTime)
+
+	// Check if clustering depth is present
+	if clusteringDepth, ok := statisticsFound[int16(1029)].(float64); ok {
+		suite.T().Logf("Clustering depth found: %.2f", clusteringDepth)
+		// In exact mode, clustering depth should NOT be approximate
+		suite.False(statisticsApprox[int16(1029)], "clustering_depth should be exact (not approximate) in exact mode")
+		suite.GreaterOrEqual(clusteringDepth, 0.0, "Clustering depth should be non-negative")
+	} else {
+		suite.T().Log("Clustering depth not returned (may require table to be physically clustered)")
+	}
+
+	// Check for storage breakdown statistics (may not be present without ACCOUNTADMIN)
+	hasStorageMetrics := false
+	if activeBytes, ok := statisticsFound[int16(1026)].(int64); ok {
+		suite.T().Logf("Active bytes found: %d", activeBytes)
+		suite.GreaterOrEqual(activeBytes, int64(0), "Active bytes should be non-negative")
+		// In exact mode, storage metrics should NOT be approximate
+		suite.False(statisticsApprox[int16(1026)], "active_bytes should be exact (not approximate) in exact mode")
+		hasStorageMetrics = true
+	}
+	if timeTravelBytes, ok := statisticsFound[int16(1027)].(int64); ok {
+		suite.T().Logf("Time Travel bytes found: %d", timeTravelBytes)
+		suite.GreaterOrEqual(timeTravelBytes, int64(0), "Time Travel bytes should be non-negative")
+		suite.False(statisticsApprox[int16(1027)], "time_travel_bytes should be exact (not approximate) in exact mode")
+	}
+	if failsafeBytes, ok := statisticsFound[int16(1028)].(int64); ok {
+		suite.T().Logf("Failsafe bytes found: %d", failsafeBytes)
+		suite.GreaterOrEqual(failsafeBytes, int64(0), "Failsafe bytes should be non-negative")
+		suite.False(statisticsApprox[int16(1028)], "failsafe_bytes should be exact (not approximate) in exact mode")
+	}
+
+	if !hasStorageMetrics {
+		suite.T().Log("Storage breakdown statistics not returned (requires ACCOUNTADMIN privileges)")
+	}
+
+	// Note: We intentionally don't drop the table to keep it for subsequent test runs,
+	// ensuring consistent results despite INFORMATION_SCHEMA caching
+}
+
+// extractStatisticsForTable extracts statistics for a specific table from GetStatistics result.
+// Returns a slice of maps, each containing statistic_key, statistic_value, statistic_is_approximate,
+// and optionally column_name.
+// TODO: Move to shared test utilities once pattern is validated across drivers.
+func extractStatisticsForTable(rec arrow.RecordBatch, catalog, schema, table string) []map[string]any {
+	catArr, ok := rec.Column(0).(*array.String)
+	if !ok {
+		return nil
+	}
+	schemaList, ok := rec.Column(1).(*array.List)
+	if !ok {
+		return nil
+	}
+	schemaStruct, ok := schemaList.ListValues().(*array.Struct)
+	if !ok {
+		return nil
+	}
+	dbSchemaNameArr, ok := schemaStruct.Field(0).(*array.String)
+	if !ok {
+		return nil
+	}
+	statsListArr, ok := schemaStruct.Field(1).(*array.List)
+	if !ok {
+		return nil
+	}
+	statsStruct, ok := statsListArr.ListValues().(*array.Struct)
+	if !ok {
+		return nil
+	}
+	tableNameArr, ok := statsStruct.Field(0).(*array.String)
+	if !ok {
+		return nil
+	}
+	columnNameArr, ok := statsStruct.Field(1).(*array.String)
+	if !ok {
+		return nil
+	}
+	statKeyArr, ok := statsStruct.Field(2).(*array.Int16)
+	if !ok {
+		return nil
+	}
+	statValueArr, ok := statsStruct.Field(3).(*array.DenseUnion)
+	if !ok {
+		return nil
+	}
+	statApproxArr, ok := statsStruct.Field(4).(*array.Boolean)
+	if !ok {
+		return nil
+	}
+
+	var results []map[string]any
+
+	for i := range rec.NumRows() {
+		if catArr.IsNull(int(i)) || catArr.Value(int(i)) != catalog {
+			continue
+		}
+		sStart, sEnd := schemaList.ValueOffsets(int(i))
+		for j := int(sStart); j < int(sEnd); j++ {
+			if dbSchemaNameArr.IsNull(j) || dbSchemaNameArr.Value(j) != schema {
+				continue
+			}
+			stStart, stEnd := statsListArr.ValueOffsets(j)
+			for k := int(stStart); k < int(stEnd); k++ {
+				if tableNameArr.IsNull(k) || tableNameArr.Value(k) != table {
+					continue
+				}
+
+				stat := map[string]any{
+					"statistic_key":            statKeyArr.Value(k),
+					"statistic_is_approximate": statApproxArr.Value(k),
+				}
+
+				// Extract column name (nullable)
+				if !columnNameArr.IsNull(k) {
+					stat["column_name"] = columnNameArr.Value(k)
+				}
+
+				// Extract statistic value from dense union
+				typeCode := statValueArr.TypeCode(k)
+				valueOffset := int(statValueArr.ValueOffset(k))
+
+				switch typeCode {
+				case 0: // int64
+					child := statValueArr.Field(0).(*array.Int64)
+					stat["statistic_value"] = child.Value(valueOffset)
+				case 1: // uint64
+					child := statValueArr.Field(1).(*array.Uint64)
+					stat["statistic_value"] = child.Value(valueOffset)
+				case 2: // float64
+					child := statValueArr.Field(2).(*array.Float64)
+					stat["statistic_value"] = child.Value(valueOffset)
+				case 3: // binary
+					child := statValueArr.Field(3).(*array.Binary)
+					stat["statistic_value"] = child.Value(valueOffset)
+				}
+
+				results = append(results, stat)
+			}
+		}
+	}
+	return results
 }
