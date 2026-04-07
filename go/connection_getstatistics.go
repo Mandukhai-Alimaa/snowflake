@@ -22,20 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"path"
 	"strconv"
 	"strings"
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/apache/arrow-adbc/go/adbc"
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-)
-
-const (
-	unionTypeInt64   arrow.UnionTypeCode = 0
-	unionTypeUint64  arrow.UnionTypeCode = 1
-	unionTypeFloat64 arrow.UnionTypeCode = 2
-	unionTypeBinary  arrow.UnionTypeCode = 3
 )
 
 // Custom Snowflake-specific statistic keys
@@ -66,71 +60,18 @@ const (
 	maxExactTables = 1000
 )
 
-type snowflakeStatistic struct {
-	tableName  string
-	columnName *string
-	key        int16
-	valueKind  arrow.UnionTypeCode
-	valueI64   int64
-	valueU64   uint64
-	valueF64   float64
-	valueBin   []byte
-	approx     bool
-}
-
-func newInt64Stat(table string, column *string, key int16, value int64, approx bool) snowflakeStatistic {
-	return snowflakeStatistic{
-		tableName:  table,
-		columnName: column,
-		key:        key,
-		valueKind:  unionTypeInt64,
-		valueI64:   value,
-		approx:     approx,
-	}
-}
-
-func newFloat64Stat(table string, column *string, key int16, value float64, approx bool) snowflakeStatistic {
-	return snowflakeStatistic{
-		tableName:  table,
-		columnName: column,
-		key:        key,
-		valueKind:  unionTypeFloat64,
-		valueF64:   value,
-		approx:     approx,
-	}
-}
-
 func (c *connectionImpl) GetStatisticNames(ctx context.Context) (array.RecordReader, error) {
 	_, span := driverbase.StartSpan(ctx, "connectionImpl.GetStatisticNames", c)
 	defer driverbase.EndSpan(span, nil)
 
-	statistics := []struct {
-		Name string
-		Key  int16
-	}{
-		{SnowflakeStatisticBytesName, SnowflakeStatisticBytesKey},
-		{SnowflakeStatisticRetentionTimeName, SnowflakeStatisticRetentionTimeDaysKey},
-		{SnowflakeStatisticActiveBytesName, SnowflakeStatisticActiveBytesKey},
-		{SnowflakeStatisticTimeTravelBytesName, SnowflakeStatisticTimeTravelBytesKey},
-		{SnowflakeStatisticFailsafeBytesName, SnowflakeStatisticFailsafeBytesKey},
-		{SnowflakeStatisticClusteringDepthName, SnowflakeStatisticClusteringDepthKey},
-	}
-
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticNamesSchema)
-	defer bldr.Release()
-
-	nameBldr := bldr.Field(0).(*array.StringBuilder)
-	keyBldr := bldr.Field(1).(*array.Int16Builder)
-
-	for _, stat := range statistics {
-		nameBldr.Append(stat.Name)
-		keyBldr.Append(stat.Key)
-	}
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticNamesSchema, []arrow.RecordBatch{rec})
+	return driverbase.BuildGetStatisticNamesReader(c.Alloc, []driverbase.StatisticNameKey{
+		{Name: SnowflakeStatisticBytesName, Key: SnowflakeStatisticBytesKey},
+		{Name: SnowflakeStatisticRetentionTimeName, Key: SnowflakeStatisticRetentionTimeDaysKey},
+		{Name: SnowflakeStatisticActiveBytesName, Key: SnowflakeStatisticActiveBytesKey},
+		{Name: SnowflakeStatisticTimeTravelBytesName, Key: SnowflakeStatisticTimeTravelBytesKey},
+		{Name: SnowflakeStatisticFailsafeBytesName, Key: SnowflakeStatisticFailsafeBytesKey},
+		{Name: SnowflakeStatisticClusteringDepthName, Key: SnowflakeStatisticClusteringDepthKey},
+	})
 }
 
 // GetStatistics returns table statistics from INFORMATION_SCHEMA.TABLES.
@@ -170,7 +111,7 @@ func (c *connectionImpl) GetStatistics(
 	}
 
 	if (catalog != nil && *catalog == "") || (dbSchema != nil && *dbSchema == "") || (tableName != nil && *tableName == "") {
-		return c.emptyGetStatisticsReader()
+		return driverbase.EmptyGetStatisticsReader(c.Alloc)
 	}
 
 	// Determine which databases to query:
@@ -218,7 +159,7 @@ func (c *connectionImpl) GetStatistics(
 	}
 
 	if len(databasesToQuery) == 0 {
-		return c.emptyGetStatisticsReader()
+		return driverbase.EmptyGetStatisticsReader(c.Alloc)
 	}
 
 	// Query tables from each matching database and group by catalog
@@ -227,19 +168,16 @@ func (c *connectionImpl) GetStatistics(
 	catalogOrder := []string{}
 	totalTables := 0
 
+	// Load table query template
+	tableQueryBytes, err := fs.ReadFile(queryTemplates, path.Join("queries", "get_statistics_tables.sql"))
+	if err != nil {
+		return nil, errToAdbcErr(adbc.StatusInternal, err)
+	}
+	tableQueryTemplate := string(tableQueryBytes)
+
 	for _, db := range databasesToQuery {
 		quotedDB := quoteIdentifier(db)
-
-		query := fmt.Sprintf(`SELECT table_catalog, table_schema, table_name,
-                     COALESCE(row_count, 0) as row_count,
-                     COALESCE(bytes, 0) as bytes,
-                     COALESCE(retention_time, 1) as retention_time,
-                     clustering_key
-              FROM %s.information_schema.tables
-              WHERE table_schema ILIKE ?
-                AND table_name ILIKE ?
-                AND table_type = 'BASE TABLE'
-              ORDER BY table_schema, table_name`, quotedDB)
+		query := fmt.Sprintf(tableQueryTemplate, quotedDB)
 
 		nvargs := []driver.NamedValue{
 			{Ordinal: 1, Value: schemaFilter},
@@ -281,12 +219,12 @@ func (c *connectionImpl) GetStatistics(
 	}
 
 	if len(tablesByCatalog) == 0 {
-		return c.emptyGetStatisticsReader()
+		return driverbase.EmptyGetStatisticsReader(c.Alloc)
 	}
 
 	// Build statistics for each catalog
 	schemaOrderByCatalog := make(map[string][]string)
-	statsByCatalog := make(map[string]map[string][]snowflakeStatistic)
+	statsByCatalog := make(map[string]map[string][]driverbase.Statistic)
 
 	for _, catalogName := range catalogOrder {
 		tables := tablesByCatalog[catalogName]
@@ -305,7 +243,7 @@ func (c *connectionImpl) GetStatistics(
 		}
 
 		// Build statistics grouped by schema
-		statsBySchema := make(map[string][]snowflakeStatistic)
+		statsBySchema := make(map[string][]driverbase.Statistic)
 		schemaOrder := []string{}
 		seenSchemas := make(map[string]bool)
 
@@ -317,10 +255,10 @@ func (c *connectionImpl) GetStatistics(
 			}
 
 			// Build base statistics (always included, always approximate since from cached INFORMATION_SCHEMA)
-			stats := []snowflakeStatistic{
-				newFloat64Stat(ti.table, nil, adbc.StatisticRowCountKey, float64(ti.rowCount), true),
-				newInt64Stat(ti.table, nil, SnowflakeStatisticBytesKey, ti.bytes, true),
-				newInt64Stat(ti.table, nil, SnowflakeStatisticRetentionTimeDaysKey, ti.retentionTime, true),
+			stats := []driverbase.Statistic{
+				driverbase.NewFloat64Stat(ti.table, nil, adbc.StatisticRowCountKey, float64(ti.rowCount), true),
+				driverbase.NewInt64Stat(ti.table, nil, SnowflakeStatisticBytesKey, ti.bytes, true),
+				driverbase.NewInt64Stat(ti.table, nil, SnowflakeStatisticRetentionTimeDaysKey, ti.retentionTime, true),
 			}
 
 			// Add storage breakdown if available and not in approximate mode
@@ -328,9 +266,9 @@ func (c *connectionImpl) GetStatistics(
 				if schemaMetrics, ok := storageMetrics[ti.schema]; ok {
 					if sm, ok := schemaMetrics[ti.table]; ok {
 						stats = append(stats,
-							newInt64Stat(ti.table, nil, SnowflakeStatisticActiveBytesKey, sm.activeBytes, false),
-							newInt64Stat(ti.table, nil, SnowflakeStatisticTimeTravelBytesKey, sm.timeTravelBytes, false),
-							newInt64Stat(ti.table, nil, SnowflakeStatisticFailsafeBytesKey, sm.failsafeBytes, false),
+							driverbase.NewInt64Stat(ti.table, nil, SnowflakeStatisticActiveBytesKey, sm.activeBytes, false),
+							driverbase.NewInt64Stat(ti.table, nil, SnowflakeStatisticTimeTravelBytesKey, sm.timeTravelBytes, false),
+							driverbase.NewInt64Stat(ti.table, nil, SnowflakeStatisticFailsafeBytesKey, sm.failsafeBytes, false),
 						)
 					}
 				}
@@ -340,7 +278,7 @@ func (c *connectionImpl) GetStatistics(
 			if !approximate && ti.clusteringKey.Valid && ti.clusteringKey.String != "" {
 				clusteringDepth, err := getClusteringDepth(ctx, c.cn, ti.catalog, ti.schema, ti.table)
 				if err == nil {
-					stats = append(stats, newFloat64Stat(ti.table, nil, SnowflakeStatisticClusteringDepthKey, clusteringDepth, false))
+					stats = append(stats, driverbase.NewFloat64Stat(ti.table, nil, SnowflakeStatisticClusteringDepthKey, clusteringDepth, false))
 				}
 			}
 
@@ -352,7 +290,7 @@ func (c *connectionImpl) GetStatistics(
 	}
 
 	// Build Arrow structure from pre-computed statistics
-	return c.buildMultiCatalogStatisticsReader(catalogOrder, schemaOrderByCatalog, statsByCatalog)
+	return driverbase.BuildGetStatisticsReader(c.Alloc, catalogOrder, schemaOrderByCatalog, statsByCatalog)
 }
 
 // tableInfo holds basic table information from INFORMATION_SCHEMA.TABLES
@@ -430,6 +368,13 @@ func queryStorageMetrics(ctx context.Context, conn driver.QueryerContext, catalo
 		return make(map[string]map[string]storageMetric), nil
 	}
 
+	// Load storage metrics query template
+	storageQueryBytes, err := fs.ReadFile(queryTemplates, path.Join("queries", "get_statistics_storage_metrics.sql"))
+	if err != nil {
+		return nil, err
+	}
+	storageQueryTemplate := string(storageQueryBytes)
+
 	// Build a list of (schema, table) pairs to filter by
 	var pairs []string
 	for _, t := range tables {
@@ -439,14 +384,7 @@ func queryStorageMetrics(ctx context.Context, conn driver.QueryerContext, catalo
 	}
 
 	// Build the query filtered to only candidate tables
-	query := fmt.Sprintf(`
-		SELECT table_schema, table_name,
-		       COALESCE(active_bytes, 0) as active_bytes,
-		       COALESCE(time_travel_bytes, 0) as time_travel_bytes,
-		       COALESCE(failsafe_bytes, 0) as failsafe_bytes
-		FROM %s.information_schema.table_storage_metrics
-		WHERE (table_schema, table_name) IN (%s)
-		ORDER BY table_schema, table_name`, quoteIdentifier(catalog), strings.Join(pairs, ", "))
+	query := fmt.Sprintf(storageQueryTemplate, quoteIdentifier(catalog), strings.Join(pairs, ", "))
 
 	nvargs := []driver.NamedValue{}
 	rows, err := conn.QueryContext(ctx, query, nvargs)
@@ -543,90 +481,6 @@ func getClusteringDepth(ctx context.Context, conn driver.QueryerContext, catalog
 // buildMultiCatalogStatisticsReader constructs the Arrow RecordReader for GetStatistics with multiple catalogs.
 // This is a pure Arrow building function with no business logic or database queries, making it suitable
 // for extraction to a shared library in the future.
-func (c *connectionImpl) buildMultiCatalogStatisticsReader(
-	catalogOrder []string,
-	schemaOrder map[string][]string,
-	statsByCatalog map[string]map[string][]snowflakeStatistic,
-) (array.RecordReader, error) {
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticsSchema)
-	defer bldr.Release()
-
-	// Get all field builders
-	catalogNameBldr := bldr.Field(0).(*array.StringBuilder)
-	catalogSchemasBldr := bldr.Field(1).(*array.ListBuilder)
-	dbSchemaStructBldr := catalogSchemasBldr.ValueBuilder().(*array.StructBuilder)
-	dbSchemaNameBldr := dbSchemaStructBldr.FieldBuilder(0).(*array.StringBuilder)
-	dbSchemaStatsListBldr := dbSchemaStructBldr.FieldBuilder(1).(*array.ListBuilder)
-
-	statsStructBldr := dbSchemaStatsListBldr.ValueBuilder().(*array.StructBuilder)
-	tableNameBldr := statsStructBldr.FieldBuilder(0).(*array.StringBuilder)
-	columnNameBldr := statsStructBldr.FieldBuilder(1).(*array.StringBuilder)
-	statKeyBldr := statsStructBldr.FieldBuilder(2).(*array.Int16Builder)
-	statValueBldr := statsStructBldr.FieldBuilder(3).(*array.DenseUnionBuilder)
-	statApproxBldr := statsStructBldr.FieldBuilder(4).(*array.BooleanBuilder)
-
-	statI64Bldr := statValueBldr.Child(0).(*array.Int64Builder)
-	statU64Bldr := statValueBldr.Child(1).(*array.Uint64Builder)
-	statF64Bldr := statValueBldr.Child(2).(*array.Float64Builder)
-	statBinBldr := statValueBldr.Child(3).(*array.BinaryBuilder)
-
-	// Build Arrow structure from pre-computed statistics
-	for _, catalogName := range catalogOrder {
-		catalogNameBldr.Append(catalogName)
-		catalogSchemasBldr.Append(true)
-
-		for _, schema := range schemaOrder[catalogName] {
-			dbSchemaStructBldr.Append(true)
-			dbSchemaNameBldr.Append(schema)
-			dbSchemaStatsListBldr.Append(true)
-
-			for _, st := range statsByCatalog[catalogName][schema] {
-				statsStructBldr.Append(true)
-				tableNameBldr.Append(st.tableName)
-
-				if st.columnName == nil {
-					columnNameBldr.AppendNull()
-				} else {
-					columnNameBldr.Append(*st.columnName)
-				}
-
-				statKeyBldr.Append(st.key)
-				statApproxBldr.Append(st.approx)
-
-				statValueBldr.Append(st.valueKind)
-				switch st.valueKind {
-				case unionTypeInt64:
-					statI64Bldr.Append(st.valueI64)
-				case unionTypeUint64:
-					statU64Bldr.Append(st.valueU64)
-				case unionTypeFloat64:
-					statF64Bldr.Append(st.valueF64)
-				case unionTypeBinary:
-					statBinBldr.Append(st.valueBin)
-				default:
-					return nil, c.ErrorHelper.Errorf(adbc.StatusInternal, "unknown statistic value kind: %d", st.valueKind)
-				}
-			}
-		}
-	}
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticsSchema, []arrow.RecordBatch{rec})
-}
-
-// emptyGetStatisticsReader returns an empty GetStatistics result
-func (c *connectionImpl) emptyGetStatisticsReader() (array.RecordReader, error) {
-	bldr := array.NewRecordBuilder(c.Alloc, adbc.GetStatisticsSchema)
-	defer bldr.Release()
-
-	rec := bldr.NewRecordBatch()
-	defer rec.Release()
-
-	return array.NewRecordReader(adbc.GetStatisticsSchema, []arrow.RecordBatch{rec})
-}
-
 // convertToInt64 converts various numeric types to int64
 func convertToInt64(v any) int64 {
 	switch val := v.(type) {
@@ -640,12 +494,6 @@ func convertToInt64(v any) int64 {
 		}
 	}
 	return 0
-}
-
-// quoteIdentifier quotes a Snowflake identifier to handle special characters and preserve case
-func quoteIdentifier(identifier string) string {
-	escaped := strings.ReplaceAll(identifier, `"`, `""`)
-	return fmt.Sprintf(`"%s"`, escaped)
 }
 
 // quoteLiteral quotes a SQL string literal for use in WHERE clauses

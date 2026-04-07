@@ -83,12 +83,12 @@ func (st *statement) Base() *driverbase.StatementImplBase {
 func (st *statement) qualifiedTableName() string {
 	parts := make([]string, 0, 3)
 	if st.targetCatalog != "" {
-		parts = append(parts, quoteTblName(st.targetCatalog))
+		parts = append(parts, quoteIdentifier(st.targetCatalog))
 	}
 	if st.targetDbSchema != "" {
-		parts = append(parts, quoteTblName(st.targetDbSchema))
+		parts = append(parts, quoteIdentifier(st.targetDbSchema))
 	}
-	parts = append(parts, quoteTblName(st.targetTable))
+	parts = append(parts, quoteIdentifier(st.targetTable))
 	return strings.Join(parts, ".")
 }
 
@@ -440,7 +440,7 @@ func (st *statement) initIngest(ctx context.Context) error {
 			createBldr.WriteString(", ")
 		}
 
-		createBldr.WriteString(quoteTblName(f.Name))
+		createBldr.WriteString(quoteIdentifier(f.Name))
 		createBldr.WriteString(" ")
 		ty := toSnowflakeType(f.Type)
 		if ty == "" {

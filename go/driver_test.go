@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
+	"github.com/adbc-drivers/driverbase-go/testutil"
 	driver "github.com/adbc-drivers/snowflake/go"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/validation"
@@ -59,6 +60,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+// quoteIdentifier quotes a Snowflake identifier to handle special characters and preserve case.
+// This is used for table names, schema names, catalog names, and column names.
+func quoteIdentifier(identifier string) string {
+	escaped := strings.ReplaceAll(identifier, `"`, `""`)
+	return fmt.Sprintf(`"%s"`, escaped)
+}
 
 type SnowflakeQuirks struct {
 	dsn         string
@@ -152,14 +160,10 @@ func getArr(arr arrow.Array) any {
 	}
 }
 
-func quoteTblName(name string) string {
-	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
-}
-
 func (s *SnowflakeQuirks) CreateSampleTable(tableName string, r arrow.RecordBatch) (err error) {
 	var b strings.Builder
 	b.WriteString("CREATE OR REPLACE TABLE ")
-	b.WriteString(quoteTblName(tableName))
+	b.WriteString(quoteIdentifier(tableName))
 	b.WriteString(" (")
 
 	for i := range r.NumCols() {
@@ -182,7 +186,7 @@ func (s *SnowflakeQuirks) CreateSampleTable(tableName string, r arrow.RecordBatc
 		return err
 	}
 
-	insertQuery := "INSERT INTO " + quoteTblName(tableName) + " VALUES ("
+	insertQuery := "INSERT INTO " + quoteIdentifier(tableName) + " VALUES ("
 	bindings := strings.Repeat("?,", int(r.NumCols()))
 	insertQuery += bindings[:len(bindings)-1] + ")"
 
@@ -206,7 +210,7 @@ func (s *SnowflakeQuirks) DropTable(cnxn adbc.Connection, tblname string) error 
 		}
 	}()
 
-	if err = stmt.SetSqlQuery(`DROP TABLE IF EXISTS ` + quoteTblName(tblname)); err != nil {
+	if err = stmt.SetSqlQuery(`DROP TABLE IF EXISTS ` + quoteIdentifier(tblname)); err != nil {
 		return err
 	}
 
@@ -3131,7 +3135,7 @@ func (suite *SnowflakeTests) TestGetStatisticsBasic() {
 	for statsRdr.Next() {
 		rec := statsRdr.RecordBatch()
 		suite.Greater(rec.NumRows(), int64(0), "Should have at least one catalog")
-		stats := extractStatisticsForTable(rec, currentDb, currentSchema, tableName)
+		stats := testutil.ExtractStatisticsForTable(rec, currentDb, currentSchema, tableName)
 		allStats = append(allStats, stats...)
 	}
 	suite.NoError(statsRdr.Err())
@@ -3139,13 +3143,7 @@ func (suite *SnowflakeTests) TestGetStatisticsBasic() {
 	suite.Greater(len(allStats), 0, "Should find statistics for STATISTICS_TEST table")
 
 	// Convert to lookup maps for easier assertions
-	statisticsFound := make(map[int16]any)   // key -> value
-	statisticsApprox := make(map[int16]bool) // key -> is_approximate
-	for _, stat := range allStats {
-		key := stat["statistic_key"].(int16)
-		statisticsFound[key] = stat["statistic_value"]
-		statisticsApprox[key] = stat["statistic_is_approximate"].(bool)
-	}
+	statisticsFound, statisticsApprox := testutil.StatisticsToLookupMaps(allStats)
 
 	// Verify we got all expected statistics
 	// Base statistics (always present in exact mode):
@@ -3210,107 +3208,4 @@ func (suite *SnowflakeTests) TestGetStatisticsBasic() {
 
 	// Note: We intentionally don't drop the table to keep it for subsequent test runs,
 	// ensuring consistent results despite INFORMATION_SCHEMA caching
-}
-
-// extractStatisticsForTable extracts statistics for a specific table from GetStatistics result.
-// Returns a slice of maps, each containing statistic_key, statistic_value, statistic_is_approximate,
-// and optionally column_name.
-// TODO: Move to shared test utilities once pattern is validated across drivers.
-func extractStatisticsForTable(rec arrow.RecordBatch, catalog, schema, table string) []map[string]any {
-	catArr, ok := rec.Column(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	schemaList, ok := rec.Column(1).(*array.List)
-	if !ok {
-		return nil
-	}
-	schemaStruct, ok := schemaList.ListValues().(*array.Struct)
-	if !ok {
-		return nil
-	}
-	dbSchemaNameArr, ok := schemaStruct.Field(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	statsListArr, ok := schemaStruct.Field(1).(*array.List)
-	if !ok {
-		return nil
-	}
-	statsStruct, ok := statsListArr.ListValues().(*array.Struct)
-	if !ok {
-		return nil
-	}
-	tableNameArr, ok := statsStruct.Field(0).(*array.String)
-	if !ok {
-		return nil
-	}
-	columnNameArr, ok := statsStruct.Field(1).(*array.String)
-	if !ok {
-		return nil
-	}
-	statKeyArr, ok := statsStruct.Field(2).(*array.Int16)
-	if !ok {
-		return nil
-	}
-	statValueArr, ok := statsStruct.Field(3).(*array.DenseUnion)
-	if !ok {
-		return nil
-	}
-	statApproxArr, ok := statsStruct.Field(4).(*array.Boolean)
-	if !ok {
-		return nil
-	}
-
-	var results []map[string]any
-
-	for i := range rec.NumRows() {
-		if catArr.IsNull(int(i)) || catArr.Value(int(i)) != catalog {
-			continue
-		}
-		sStart, sEnd := schemaList.ValueOffsets(int(i))
-		for j := int(sStart); j < int(sEnd); j++ {
-			if dbSchemaNameArr.IsNull(j) || dbSchemaNameArr.Value(j) != schema {
-				continue
-			}
-			stStart, stEnd := statsListArr.ValueOffsets(j)
-			for k := int(stStart); k < int(stEnd); k++ {
-				if tableNameArr.IsNull(k) || tableNameArr.Value(k) != table {
-					continue
-				}
-
-				stat := map[string]any{
-					"statistic_key":            statKeyArr.Value(k),
-					"statistic_is_approximate": statApproxArr.Value(k),
-				}
-
-				// Extract column name (nullable)
-				if !columnNameArr.IsNull(k) {
-					stat["column_name"] = columnNameArr.Value(k)
-				}
-
-				// Extract statistic value from dense union
-				typeCode := statValueArr.TypeCode(k)
-				valueOffset := int(statValueArr.ValueOffset(k))
-
-				switch typeCode {
-				case 0: // int64
-					child := statValueArr.Field(0).(*array.Int64)
-					stat["statistic_value"] = child.Value(valueOffset)
-				case 1: // uint64
-					child := statValueArr.Field(1).(*array.Uint64)
-					stat["statistic_value"] = child.Value(valueOffset)
-				case 2: // float64
-					child := statValueArr.Field(2).(*array.Float64)
-					stat["statistic_value"] = child.Value(valueOffset)
-				case 3: // binary
-					child := statValueArr.Field(3).(*array.Binary)
-					stat["statistic_value"] = child.Value(valueOffset)
-				}
-
-				results = append(results, stat)
-			}
-		}
-	}
-	return results
 }

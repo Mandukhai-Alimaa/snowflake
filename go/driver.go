@@ -25,6 +25,7 @@ package snowflake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"strings"
@@ -197,8 +198,11 @@ func errToAdbcErr(code adbc.Status, err error) error {
 	}
 }
 
-func quoteTblName(name string) string {
-	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+// quoteIdentifier quotes a Snowflake identifier to handle special characters and preserve case.
+// This is used for table names, schema names, catalog names, and column names.
+func quoteIdentifier(identifier string) string {
+	escaped := strings.ReplaceAll(identifier, `"`, `""`)
+	return fmt.Sprintf(`"%s"`, escaped)
 }
 
 type config struct {
