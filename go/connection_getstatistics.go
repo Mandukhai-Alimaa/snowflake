@@ -18,12 +18,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"path"
 	"strconv"
 	"strings"
 
@@ -31,6 +30,12 @@ import (
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/array"
 )
+
+//go:embed queries/get_statistics_tables.sql
+var queryGetStatisticsTables string
+
+//go:embed queries/get_statistics_storage_metrics.sql
+var queryGetStatisticsStorageMetrics string
 
 // Custom Snowflake-specific statistic keys
 const (
@@ -168,16 +173,9 @@ func (c *connectionImpl) GetStatistics(
 	catalogOrder := []string{}
 	totalTables := 0
 
-	// Load table query template
-	tableQueryBytes, err := fs.ReadFile(queryTemplates, path.Join("queries", "get_statistics_tables.sql"))
-	if err != nil {
-		return nil, errToAdbcErr(adbc.StatusInternal, err)
-	}
-	tableQueryTemplate := string(tableQueryBytes)
-
 	for _, db := range databasesToQuery {
 		quotedDB := quoteIdentifier(db)
-		query := fmt.Sprintf(tableQueryTemplate, quotedDB)
+		query := fmt.Sprintf(queryGetStatisticsTables, quotedDB)
 
 		nvargs := []driver.NamedValue{
 			{Ordinal: 1, Value: schemaFilter},
@@ -368,13 +366,6 @@ func queryStorageMetrics(ctx context.Context, conn driver.QueryerContext, catalo
 		return make(map[string]map[string]storageMetric), nil
 	}
 
-	// Load storage metrics query template
-	storageQueryBytes, err := fs.ReadFile(queryTemplates, path.Join("queries", "get_statistics_storage_metrics.sql"))
-	if err != nil {
-		return nil, err
-	}
-	storageQueryTemplate := string(storageQueryBytes)
-
 	// Build a list of (schema, table) pairs to filter by
 	var pairs []string
 	for _, t := range tables {
@@ -384,7 +375,7 @@ func queryStorageMetrics(ctx context.Context, conn driver.QueryerContext, catalo
 	}
 
 	// Build the query filtered to only candidate tables
-	query := fmt.Sprintf(storageQueryTemplate, quoteIdentifier(catalog), strings.Join(pairs, ", "))
+	query := fmt.Sprintf(queryGetStatisticsStorageMetrics, quoteIdentifier(catalog), strings.Join(pairs, ", "))
 
 	nvargs := []driver.NamedValue{}
 	rows, err := conn.QueryContext(ctx, query, nvargs)
